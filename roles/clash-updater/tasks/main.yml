@@ -1,0 +1,43 @@
+- name: Install clash-updater script
+  ansible.builtin.copy:
+    src: clash-updater
+    dest: /usr/local/bin/clash-updater
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install systemd unit files
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/lib/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - clash-updater.service
+    - clash-updater.timer
+  notify: reload systemd
+
+- name: Create systemd drop-in directory
+  ansible.builtin.file:
+    path: /usr/local/lib/systemd/system/clash-updater.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install environment.conf drop-in
+  ansible.builtin.template:
+    src: environment.conf.j2
+    dest: /usr/local/lib/systemd/system/clash-updater.service.d/environment.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: reload systemd
+
+- name: Enable and start clash-updater.timer
+  ansible.builtin.systemd:
+    name: clash-updater.timer
+    enabled: true
+    state: started
+    daemon_reload: true

@@ -1,0 +1,4 @@
+# 复制为 vault.yml 并用 ansible-vault 加密：
+#   cp vault.yml.example vault.yml
+#   ansible-vault encrypt vault.yml
+clash_updater_url: "https://example.com/api/v1/client/subscribe?token=REPLACE_ME"

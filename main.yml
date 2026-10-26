@@ -1,0 +1,6 @@
+---
+- name: Deploy clash-updater
+  hosts: mihomo
+  become: true
+  roles:
+    - clash-updater

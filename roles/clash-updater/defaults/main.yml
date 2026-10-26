@@ -1,0 +1,4 @@
+# URL 和 CONFIG 属于敏感信息，不应在这里硬编码真实值。
+# 真实值放 group_vars/mihomo/vault.yml，用 ansible-vault 加密。
+# clash_updater_url: ""
+clash_updater_config: "/srv/mihomo/config.yaml"

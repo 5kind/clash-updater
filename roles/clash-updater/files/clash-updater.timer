@@ -1,0 +1,12 @@
+# /usr/local/lib/systemd/system/clash-updater.timer
+[Unit]
+Description=Daily Clash configuration update
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=5min
+Unit=clash-updater.service
+
+[Install]
+WantedBy=timers.target

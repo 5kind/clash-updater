@@ -1,0 +1,7 @@
+# /usr/local/lib/systemd/system/clash-updater.service
+[Unit]
+Description=Update Clash configuration
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/clash-updater

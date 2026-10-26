@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+
+# /usr/local/bin/clash-updater
+
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+
+import yaml
+
+
+def log(message):
+    print(f"{message}", flush=True)
+
+
+def load_yaml(content, source):
+    try:
+        config = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{source}: YAML parsing failed: {exc}") from exc
+
+    if not isinstance(config, dict):
+        raise ValueError(f"{source}: YAML root must be a mapping")
+
+    return config
+
+
+def get_controller_url(address):
+    if not isinstance(address, str) or not address.strip():
+        raise ValueError("external-controller is missing or empty")
+
+    address = address.strip()
+
+    if address.startswith(("http://", "https://")):
+        return address.rstrip("/")
+
+    # Wildcard listen addresses are not suitable as client destinations.
+    if address.startswith("0.0.0.0:"):
+        address = "127.0.0.1:" + address.split(":", 1)[1]
+    elif address.startswith("[::]:"):
+        address = "127.0.0.1:" + address.rsplit(":", 1)[1]
+    elif address.startswith(":"):
+        address = "127.0.0.1" + address
+
+    if address in ("0.0.0.0", "::"):
+        raise ValueError(
+            "external-controller has no port; cannot determine API URL"
+        )
+
+    return "http://" + address
+
+
+def atomic_write(path, content, mode):
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, temporary = tempfile.mkstemp(
+        prefix=".mihomo-updater-",
+        dir=path.parent,
+    )
+
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def reload_config(api, secret, content):
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    if secret:
+        headers["Authorization"] = f"Bearer {secret}"
+
+    # A non-empty payload makes Mihomo parse the supplied YAML directly.
+    body = json.dumps({
+        "path": "",
+        "payload": content.decode("utf-8-sig"),
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        api + "/configs?force=true",
+        data=body,
+        headers=headers,
+        method="PUT",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            status = response.status
+            log(f"Controller reload HTTP status: {status}")
+
+            if status not in (200, 204):
+                raise RuntimeError(
+                    f"Unexpected reload HTTP status: {status}"
+                )
+
+    except urllib.error.HTTPError as exc:
+        # Limit the response text to avoid dumping large or sensitive data.
+        detail = exc.read(512).decode("utf-8", errors="replace")
+        log(f"Controller reload FAILED: HTTP {exc.code}")
+        if detail:
+            log(f"Controller response: {detail!r}")
+        raise
+
+    except urllib.error.URLError as exc:
+        log(f"Controller reload FAILED: {exc.reason}")
+        raise
+
+
+def main():
+    url = os.environ.get("URL", "").strip()
+    config_env = os.environ.get("CONFIG", "").strip()
+
+    log(f"URL environment variable: {'set' if url else 'NOT SET'}")
+    log(f"CONFIG environment variable: {'set' if config_env else 'NOT SET'}")
+
+    if not url or not config_env:
+        raise ValueError("URL and CONFIG environment variables are required")
+
+    config_path = pathlib.Path(config_env).expanduser()
+    log(f"CONFIG file: {config_path}")
+
+    if config_path.exists():
+        old_content = config_path.read_bytes()
+        old_config = load_yaml(old_content, "Existing configuration")
+        old_mode = config_path.stat().st_mode & 0o777
+        log("Existing configuration: parsed successfully")
+    else:
+        old_content = None
+        old_config = {}
+        old_mode = 0o600
+        log("Existing configuration: file does not exist")
+
+    old_controller = old_config.get("external-controller", "")
+    old_secret = old_config.get("secret") or ""
+
+    log(f"Old external-controller: {old_controller or '(not configured)'}")
+    log(f"Old secret: {'set' if old_secret else 'empty or not configured'}")
+
+    if not old_controller:
+        raise ValueError(
+            "Cannot safely reload: existing configuration has no "
+            "external-controller"
+        )
+
+    api = get_controller_url(old_controller)
+    log(f"Controller API endpoint: {api}")
+
+    log("Downloading configuration")
+
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "mihomo-updater/1.0"},
+    )
+
+    with urllib.request.urlopen(request, timeout=60) as response:
+        new_content = response.read()
+
+    if not new_content:
+        raise ValueError("Downloaded configuration is empty")
+
+    new_config = load_yaml(new_content, "Downloaded configuration")
+    log("Downloaded configuration: YAML parsed successfully")
+
+    # Keep the current controller credentials for the running instance.
+    # New controller settings take effect only after the reload succeeds.
+    log("Writing new configuration")
+
+    atomic_write(config_path, new_content, old_mode)
+    log("Configuration file update: SUCCESS")
+
+    try:
+        log("Sending configuration reload request")
+        reload_config(api, old_secret, new_content)
+        log("External controller reload: SUCCESS")
+
+    except Exception:
+        log("External controller reload: FAILED")
+
+        if old_content is not None:
+            atomic_write(config_path, old_content, old_mode)
+            log("Configuration rollback: SUCCESS")
+        else:
+            config_path.unlink(missing_ok=True)
+            log("Configuration rollback: removed newly created file")
+
+        raise
+
+    log("Update completed successfully")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        log(f"ERROR: {type(exc).__name__}: {exc}")
+        sys.exit(1)
